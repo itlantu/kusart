@@ -19,7 +19,7 @@ jobs:
         cxx: [ "g++", "clang++" ]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # doctest 以 git submodule 引入，不拉取子模块会让 CMake 直接报错
           submodules: recursive
