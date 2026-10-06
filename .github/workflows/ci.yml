@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.cxx }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [ "g++", "clang++" ]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # doctest 以 git submodule 引入，不拉取子模块会让 CMake 直接报错
+          submodules: recursive
+
+      - name: Show toolchain
+        run: |
+          cmake --version
+          ninja --version
+          ${{ matrix.cxx }} --version
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
