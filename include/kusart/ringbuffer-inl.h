@@ -1,4 +1,4 @@
-// 本文件由 kusart/ringbuffer.h 在末尾引入，请勿直接包含。
+// 本文件由 kusart/ringbuffer.h 在末尾引入, 请勿直接包含
 #ifndef KUSART_RINGBUFFER_INL_H
 #define KUSART_RINGBUFFER_INL_H
 

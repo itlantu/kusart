@@ -12,10 +12,7 @@ constexpr kRingBufferSizeType kRingBufferMaxSize = UINT16_MAX;
 
 /**
  * @brief 定长环形缓冲区, 实际可缓存BUFFER_SIZE - 1个字节
- * @tparam BUFFER_SIZE 缓冲区容量，必须是大于0且小于kRingBufferMaxSize的 2 的幂
- * @note 单生产者单消费者：push() 与 pop() 必须分别只由一个执行流调用，典型用法是中断里 push()、主循环里 pop()
- * @note 读写索引为 std::atomic 并使用 acquire/release 顺序；在 Cortex-M3/M4/M7/M33 上 lock-free，
- *       代价是每次 push/pop 各多两条 dmb。Cortex-M0/M0+ 的类型特征报告非 lock-free，实测仍生成内联代码
+ * @tparam BUFFER_SIZE 缓冲区容量，必须是大于0且小于kRingBufferMaxSize的2的幂
  */
 template <kRingBufferSizeType BUFFER_SIZE>
 struct RingBuffer {
