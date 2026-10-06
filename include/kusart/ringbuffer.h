@@ -23,7 +23,7 @@ struct RingBuffer {
     static_assert(BUFFER_SIZE < kRingBufferMaxSize, "容量必须小于 kRingBufferMaxSize");
     static_assert(std::has_single_bit(BUFFER_SIZE), "容量必须是 2 的幂");
 
-    uint8_t buffer[BUFFER_SIZE];
+    uint8_t buffer[BUFFER_SIZE]{};
     std::atomic<uint16_t> read_index;
     std::atomic<uint16_t> write_index;
 
