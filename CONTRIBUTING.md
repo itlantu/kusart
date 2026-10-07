@@ -10,10 +10,10 @@ kusart 是一个面向嵌入式的串口解析库，目标平台为 STM32 与 ES
 
 | 约束 | 说明 |
 | --- | --- |
-| 零动态分配 | 不使用 `new` / `delete` / `malloc`，缓冲区由模板参数或调用方提供 |
+| 零动态分配 | 不使用 `new` / `delete` / `malloc`，缓冲区由调用方提供的静态数组（或 `OwnedRingBuffer` 自带的数组）承担 |
 | 无异常、无 RTTI | 必须能通过 `-fno-exceptions -fno-rtti` 编译 |
 | 不依赖平台 | 不调用 HAL、不操作寄存器、不读时钟；超时与 tick 由调用方传入 |
-| C++20 | 项目统一使用 C++20 |
+| C++20 | 项目统一使用 C++20；库依赖 `std::span` 与 C++20 的 `std::atomic`（`constexpr` 构造），工具链需提供完整的 C++20 标准库 |
 
 `test_embedded_build` 目标专门用于守住第二条约束：改动库头文件后它必须仍然通过。
 
@@ -71,26 +71,26 @@ clang-format -i <改动过的文件>
 | 对象 | 规范 | 示例 |
 | --- | --- | --- |
 | 文件名 | `snake_case` | `ringbuffer-inl.h` |
-| 类型 | `PascalCase` | `RingBuffer`、`ByteRange` |
-| 函数 | `PascalCase`，动词开头 | `PushAll`、`RunSmokeCheck` |
-| 变量、参数 | `snake_case` | `read_index`、`buffer_size` |
+| 类型 | `PascalCase` | `RingBuffer`、`OwnedRingBuffer` |
+| 函数 | `PascalCase`，动词开头 | `DrainAll`、`RunSmokeCheck` |
+| 变量、参数 | `snake_case` | `storage`、`expected` |
 | 类成员变量 | `snake_case_` | `read_index_` |
 | 结构体成员 | `snake_case` | `read_index` |
-| 常量 | `k` + `PascalCase` | `kModMark`、`kUsableCapacity` |
+| 常量 | `k` + `PascalCase` | `kCapacity`、`kUsableCapacity` |
 | 宏 | `UPPER_SNAKE_CASE` | `KUSART_RINGBUFFER_H` |
 | 命名空间 | 全小写 | `kusart` |
-| 模板参数 | 类型 `PascalCase`，非类型 `snake_case` | `R`、`BUFFER_SIZE` |
+| 模板参数 | 类型 `PascalCase`，非类型 `UPPER_SNAKE_CASE` | `T`、`CAPACITY` |
 
 ### 注释
 
 - Doxygen 注释写在**头文件**：每个类、函数、方法都要有；`@brief` 必填，有参数写 `@param`，有返回值写 `@return`
 - 中文描述 + 英文术语
 - 实现文件（`-inl.h`、`.cc`）不重复 Doxygen，只在需要说明实现细节时写普通注释
-- 运行期输出（日志、断言消息）保持 **ASCII**：源码以 `/utf-8` 编译，中文字面量在 GBK 控制台下会显示为乱码
+- 运行期输出（日志、`assert` 消息）保持 **ASCII**：源码以 `/utf-8` 编译，中文字面量在 GBK 控制台下会显示为乱码；编译期的 `static_assert` 消息不受此限，可以用中文
 
 ### 头文件组织
 
-- 声明放在 `.h`，模板定义放在同目录的 `-inl.h`，由 `.h` 在 include guard 之内、文件末尾引入
+- 声明放在 `.h`，实现放在同目录的 `-inl.h`，由 `.h` 在 include guard 之内、文件末尾引入；非模板实现同样如此，除非有明确理由（需要隐藏实现、或代码量较大）才改放 `src/*.cc`
 - 模板定义必须对实例化点可见，因此不要放进 `.cc`
 - `-inl.h` 只由对应的 `.h` 引入，不要被其他翻译单元直接包含
 
@@ -102,7 +102,7 @@ clang-format -i <改动过的文件>
 
   ```cpp
   TEST_SUITE("ringbuffer") {
-      TEST_CASE("Initial state is empty") { ... }
+      TEST_CASE("Fresh buffer is empty") { ... }
   }
   ```
 
