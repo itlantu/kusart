@@ -1,92 +1,104 @@
 #include <doctest/doctest.h>
 
 #include <array>
-#include <concepts>
+#include <cstddef>
 #include <cstdint>
-#include <ranges>
+#include <span>
 
 #include "kusart/ringbuffer.h"
 
 namespace {
 
 using kusart::kRingBufferSizeType;
+using kusart::OwnedRingBuffer;
 using kusart::RingBuffer;
 
-constexpr kRingBufferSizeType kBufferSize = 8;
-constexpr int kUsableCapacity = kBufferSize - 1;
-
-using Buffer = RingBuffer<kBufferSize>;
-
-// 编译期校验容量与取模掩码自洽
-static_assert(Buffer::capacity() == kBufferSize);
-static_assert(Buffer::kModMark == kBufferSize - 1);
+constexpr kRingBufferSizeType kCapacity = 8;
+constexpr kRingBufferSizeType kUsableCapacity = kCapacity - 1;
 
 /**
- * @brief 元素可转换为 uint8_t 的输入范围
- * @tparam R 范围类型
- */
-template <typename R>
-concept ByteRange = std::ranges::input_range<R> && std::convertible_to<std::ranges::range_value_t<R>, uint8_t>;
-
-/**
- * @brief 依次把 expected 写入缓冲区，并要求每次写入都成功
+ * @brief 从 first 起依次写入 count 个字节，并要求每次都成功
  * @param buffer 目标缓冲区
- * @param expected 待写入的字节序列，可用 std::views::iota 等惰性范围表达
- * @tparam BUFFER_SIZE 缓冲区容量
- * @tparam R 字节序列类型
+ * @param first 首个字节的值
+ * @param count 写入字节数
  */
-template <kRingBufferSizeType BUFFER_SIZE, ByteRange R>
-void PushAll(RingBuffer<BUFFER_SIZE>& buffer, R&& expected) {
-    for (const auto byte : expected) {
-        CAPTURE(byte);
-        CHECK(buffer.push(static_cast<uint8_t>(byte)));
+void PushRange(RingBuffer& buffer, int first, int count) {
+    for (int i = 0; i < count; ++i) {
+        const auto value = static_cast<uint8_t>(first + i);
+        CAPTURE(value);
+        REQUIRE(buffer.push(value));
     }
 }
 
 /**
- * @brief 依次读出缓冲区数据并与 expected 逐字节比对
+ * @brief 从 first 起依次读出 count 个字节并逐字节比对
  * @param buffer 源缓冲区
- * @param expected 期望读出的字节序列
- * @tparam BUFFER_SIZE 缓冲区容量
- * @tparam R 字节序列类型
+ * @param first 首个期望字节的值
+ * @param count 读出字节数
  */
-template <kRingBufferSizeType BUFFER_SIZE, ByteRange R>
-void PopAll(RingBuffer<BUFFER_SIZE>& buffer, R&& expected) {
-    for (const auto byte : expected) {
+void PopRange(RingBuffer& buffer, int first, int count) {
+    for (int i = 0; i < count; ++i) {
+        const auto expected = static_cast<uint8_t>(first + i);
         uint8_t actual = 0;
-        CAPTURE(byte);
+        CAPTURE(expected);
         REQUIRE(buffer.pop(actual));
-        CHECK_EQ(actual, byte);
+        CHECK_EQ(actual, expected);
     }
+}
+
+/**
+ * @brief 与容量无关的消费端：只依赖 RingBuffer 本身，不需要知道自己拿到的缓冲区多大
+ * @param buffer 数据源缓冲区
+ * @param out 接收数据的缓冲区，长度必须不小于max
+ * @param max 最多读出的字节数
+ * @return 实际读出的字节数
+ */
+int DrainAll(RingBuffer& buffer, uint8_t* out, int max) {
+    int count = 0;
+    while (count < max && buffer.pop(out[count]))
+        ++count;
+    return count;
 }
 
 TEST_SUITE("ringbuffer") {
-    TEST_CASE("Initial state is empty") {
-        Buffer buffer{};
+    TEST_CASE("Fresh buffer is empty") {
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
+        CHECK(buffer.is_config_valid());
+        CHECK_EQ(buffer.capacity(), kCapacity);
+        CHECK_EQ(buffer.usable_capacity(), kUsableCapacity);
         CHECK_EQ(buffer.count(), 0);
         CHECK_EQ(buffer.free(), kUsableCapacity);
-        CHECK_EQ(buffer.read_index, 0);
-        CHECK_EQ(buffer.write_index, 0);
     }
 
     TEST_CASE("Push and pop keep FIFO order and update count and free") {
         constexpr std::array<uint8_t, 3> kPayload{0x11, 0x22, 0x33};
-        Buffer buffer{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
-        PushAll(buffer, kPayload);
+        for (const uint8_t byte : kPayload) {
+            CAPTURE(byte);
+            REQUIRE(buffer.push(byte));
+        }
         CHECK_EQ(buffer.count(), kPayload.size());
         CHECK_EQ(buffer.free(), kUsableCapacity - static_cast<int>(kPayload.size()));
 
-        PopAll(buffer, kPayload);
+        for (const uint8_t expected : kPayload) {
+            uint8_t byte = 0;
+            CAPTURE(expected);
+            REQUIRE(buffer.pop(byte));
+            CHECK_EQ(byte, expected);
+        }
         CHECK_EQ(buffer.count(), 0);
         CHECK_EQ(buffer.free(), kUsableCapacity);
     }
 
     TEST_CASE("Push until full then reject without losing data") {
-        Buffer buffer{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
-        PushAll(buffer, std::views::iota(0, kUsableCapacity));
+        PushRange(buffer, 0, kUsableCapacity);
         CHECK_EQ(buffer.count(), kUsableCapacity);
         CHECK_EQ(buffer.free(), 0);
 
@@ -94,100 +106,174 @@ TEST_SUITE("ringbuffer") {
         CHECK_FALSE(buffer.push(0xFF));
         CHECK_EQ(buffer.count(), kUsableCapacity);
 
-        PopAll(buffer, std::views::iota(0, kUsableCapacity));
+        PopRange(buffer, 0, kUsableCapacity);
         CHECK_EQ(buffer.free(), kUsableCapacity);
     }
 
     TEST_CASE("Pop on empty fails and leaves out param untouched") {
-        Buffer buffer{};
-        uint8_t actual = 0xAA;
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
+        uint8_t byte = 0xAA;
 
-        CHECK_FALSE(buffer.pop(actual));
-        CHECK_EQ(actual, 0xAA);
+        CHECK_FALSE(buffer.pop(byte));
+        CHECK_EQ(byte, 0xAA);
         CHECK_EQ(buffer.count(), 0);
     }
 
     TEST_CASE("Write index wraps around and order stays FIFO") {
-        Buffer buffer{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
-        PushAll(buffer, std::views::iota(0, 5));
-        PopAll(buffer, std::views::iota(0, 3));
+        PushRange(buffer, 0, 5);
+        PopRange(buffer, 0, 3);
         CHECK_EQ(buffer.count(), 2);
 
-        // 写入5~8，其中8的落点越过缓冲区末尾
-        PushAll(buffer, std::views::iota(5, 9));
-        PopAll(buffer, std::views::iota(3, 9));
+        // 写入5~8，其中8的落点越过存储末尾
+        PushRange(buffer, 5, 4);
+        PopRange(buffer, 3, 6);
         CHECK_EQ(buffer.count(), 0);
     }
 
     TEST_CASE("Repeated fill and drain rounds wrap correctly") {
-        Buffer buffer{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
-        for (const int round : std::views::iota(0, 3)) {
+        for (int round = 0; round < 3; ++round) {
             const int base = round * kUsableCapacity;
 
-            PushAll(buffer, std::views::iota(base, base + kUsableCapacity));
+            PushRange(buffer, base, kUsableCapacity);
             CHECK_EQ(buffer.count(), kUsableCapacity);
             CHECK_FALSE(buffer.push(0xFF));
 
-            PopAll(buffer, std::views::iota(base, base + kUsableCapacity));
+            PopRange(buffer, base, kUsableCapacity);
             CHECK_EQ(buffer.count(), 0);
         }
     }
 
     TEST_CASE("Clear resets state and allows refilling") {
-        Buffer buffer{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
 
-        PushAll(buffer, std::views::iota(0, 4));
+        PushRange(buffer, 0, 4);
         CHECK_EQ(buffer.count(), 4);
 
         buffer.clear();
         CHECK_EQ(buffer.count(), 0);
         CHECK_EQ(buffer.free(), kUsableCapacity);
 
-        uint8_t actual = 0;
-        CHECK_FALSE(buffer.pop(actual));
+        uint8_t byte = 0;
+        CHECK_FALSE(buffer.pop(byte));
 
-        PushAll(buffer, std::views::iota(0, kUsableCapacity));
+        PushRange(buffer, 0, kUsableCapacity);
         CHECK_EQ(buffer.count(), kUsableCapacity);
         CHECK_EQ(buffer.free(), 0);
     }
 
-    TEST_CASE("Extreme byte values are not mistaken for empty or full") {
-        constexpr std::array<uint8_t, 2> kExtremes{0x00, 0xFF};
-        Buffer buffer{};
+    TEST_CASE("Capacity need not be a power of two") {
+        constexpr kRingBufferSizeType kOddCapacity = 10;
+        constexpr kRingBufferSizeType kOddUsable = kOddCapacity - 1;
+        uint8_t storage[kOddCapacity]{};
+        RingBuffer buffer{storage};
 
-        PushAll(buffer, kExtremes);
-        CHECK_EQ(buffer.count(), kExtremes.size());
-        PopAll(buffer, kExtremes);
-    }
+        CHECK(buffer.is_config_valid());
+        CHECK_EQ(buffer.capacity(), kOddCapacity);
+        CHECK_EQ(buffer.usable_capacity(), kOddUsable);
 
-    TEST_CASE("Count plus free always equals usable capacity") {
-        Buffer buffer{};
-        uint8_t actual = 0;
+        PushRange(buffer, 0, kOddUsable);
+        CHECK_EQ(buffer.count(), kOddUsable);
+        CHECK_FALSE(buffer.push(0xFF));
 
-        for (const int step : std::views::iota(0, 32)) {
-            CHECK_EQ(buffer.count() + buffer.free(), kUsableCapacity);
+        // 读走5个后写端绕过存储末尾，顺序仍应是 FIFO
+        PopRange(buffer, 0, 5);
+        PushRange(buffer, kOddUsable, 2);
+        CHECK_EQ(buffer.count(), kOddUsable - 5 + 2);
 
-            if (step % 2 == 0)
-                buffer.push(static_cast<uint8_t>(step));
-            else
-                buffer.pop(actual);
-        }
-    }
-
-    TEST_CASE("Template works at another capacity") {
-        constexpr kRingBufferSizeType kOtherSize = 32;
-        constexpr int kOtherCapacity = kOtherSize - 1;
-        RingBuffer<kOtherSize> buffer{};
-
-        PushAll(buffer, std::views::iota(0, kOtherCapacity));
-        CHECK_EQ(buffer.count(), kOtherCapacity);
-        CHECK_EQ(buffer.free(), 0);
-        CHECK_FALSE(buffer.push(0xAB));
-
-        PopAll(buffer, std::views::iota(0, kOtherCapacity));
+        PopRange(buffer, 5, kOddUsable - 5 + 2);
         CHECK_EQ(buffer.count(), 0);
+    }
+
+    TEST_CASE("Minimum capacity holds exactly one byte") {
+        uint8_t storage[2]{};
+        RingBuffer buffer{storage};
+
+        CHECK(buffer.is_config_valid());
+        CHECK_EQ(buffer.capacity(), 2);
+        CHECK_EQ(buffer.usable_capacity(), 1);
+
+        REQUIRE(buffer.push(0xAA));
+        CHECK_EQ(buffer.count(), 1);
+        CHECK_EQ(buffer.free(), 0);
+        CHECK_FALSE(buffer.push(0xBB));
+
+        uint8_t byte = 0;
+        REQUIRE(buffer.pop(byte));
+        CHECK_EQ(byte, 0xAA);
+        CHECK_FALSE(buffer.pop(byte));
+    }
+
+    TEST_CASE("Buffers over different storage stay independent") {
+        uint8_t small_storage[4]{};
+        uint8_t storage[kCapacity]{};
+        RingBuffer small{small_storage};
+        RingBuffer buffer{storage};
+
+        CHECK_EQ(small.capacity(), 4);
+        CHECK_EQ(buffer.capacity(), kCapacity);
+
+        REQUIRE(small.push(0x01));
+        CHECK_EQ(small.count(), 1);
+        CHECK_EQ(buffer.count(), 0);
+
+        // 数据直接落在各自的存储里
+        CHECK_EQ(small_storage[0], 0x01);
+        CHECK_EQ(storage[0], 0x00);
+    }
+
+    TEST_CASE("Non template consumer drains through a reference") {
+        uint8_t storage[kCapacity]{};
+        RingBuffer buffer{storage};
+
+        PushRange(buffer, 0, kUsableCapacity);
+
+        std::array<uint8_t, kCapacity> out{};
+        const int drained = DrainAll(buffer, out.data(), static_cast<int>(out.size()));
+
+        CHECK_EQ(drained, kUsableCapacity);
+        for (int i = 0; i < drained; ++i)
+            CHECK_EQ(out[static_cast<std::size_t>(i)], static_cast<uint8_t>(i));
+        CHECK_EQ(buffer.count(), 0);
+    }
+
+    TEST_CASE("Owned wrapper carries its own storage") {
+        OwnedRingBuffer<kCapacity> rx;
+        OwnedRingBuffer<4> other;
+
+        CHECK(rx.get().is_config_valid());
+        CHECK_EQ(rx.get().capacity(), kCapacity);
+        CHECK_EQ(rx.get().usable_capacity(), kUsableCapacity);
+        CHECK_EQ(other.get().capacity(), 4);
+        CHECK_EQ(other.get().count(), 0);
+
+        REQUIRE(rx.get().push(0x11));
+        CHECK_EQ(rx.get().count(), 1);
+        CHECK_EQ(other.get().count(), 0);
+
+        uint8_t byte = 0;
+        REQUIRE(rx.get().pop(byte));
+        CHECK_EQ(byte, 0x11);
+        CHECK_EQ(rx.get().count(), 0);
+    }
+
+    TEST_CASE("Configuration is invalid below two bytes") {
+        const std::span<uint8_t> nothing{};
+        uint8_t single[1]{};
+        RingBuffer empty{nothing};
+        RingBuffer one{single};
+
+        CHECK_FALSE(empty.is_config_valid());
+        CHECK_EQ(empty.capacity(), 0);
+        CHECK_FALSE(one.is_config_valid());
+        CHECK_EQ(one.capacity(), 1);
     }
 }
 

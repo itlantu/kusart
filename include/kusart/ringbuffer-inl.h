@@ -4,57 +4,69 @@
 
 #include <atomic>
 #include <cstdint>
+#include <span>
 
 namespace kusart {
 
-template <kRingBufferSizeType BUFFER_SIZE>
-uint16_t RingBuffer<BUFFER_SIZE>::count() const {
-    const uint16_t read = read_index.load(std::memory_order_acquire);
-    const uint16_t write = write_index.load(std::memory_order_acquire);
+inline constexpr RingBuffer::RingBuffer(std::span<uint8_t> storage) noexcept
+    : storage_(storage.data()), capacity_(static_cast<kRingBufferSizeType>(storage.size())) {}
 
+inline constexpr bool RingBuffer::is_config_valid() const noexcept {
+    return capacity_ > 1;
+}
+
+inline constexpr kRingBufferSizeType RingBuffer::capacity() const noexcept {
+    return capacity_;
+}
+
+inline constexpr kRingBufferSizeType RingBuffer::usable_capacity() const noexcept {
+    return static_cast<kRingBufferSizeType>(capacity_ - 1);
+}
+
+inline kRingBufferSizeType RingBuffer::count() const noexcept {
+    const kRingBufferSizeType read = read_index_.load(std::memory_order_acquire);
+    const kRingBufferSizeType write = write_index_.load(std::memory_order_acquire);
+
+    // 两个索引都恒定落在[0, capacity_)内，因此可以直接比较而不必担心整型回绕
     if (write >= read)
-        return static_cast<uint16_t>(write - read);
-    return static_cast<uint16_t>(BUFFER_SIZE - read + write);
+        return static_cast<kRingBufferSizeType>(write - read);
+    return static_cast<kRingBufferSizeType>(capacity_ - read + write);
 }
 
-template <kRingBufferSizeType BUFFER_SIZE>
-uint16_t RingBuffer<BUFFER_SIZE>::free() const {
-    const auto used = count();
-    return static_cast<uint16_t>((BUFFER_SIZE - 1) - used);
+inline kRingBufferSizeType RingBuffer::free() const noexcept {
+    return static_cast<kRingBufferSizeType>(usable_capacity() - count());
 }
 
-template <kRingBufferSizeType BUFFER_SIZE>
-void RingBuffer<BUFFER_SIZE>::clear() {
-    read_index.store(0, std::memory_order_relaxed);
-    write_index.store(0, std::memory_order_relaxed);
+inline void RingBuffer::clear() noexcept {
+    read_index_.store(0, std::memory_order_relaxed);
+    write_index_.store(0, std::memory_order_relaxed);
 }
 
-template <kRingBufferSizeType BUFFER_SIZE>
-bool RingBuffer<BUFFER_SIZE>::push(uint8_t ch) {
-    const uint16_t write = write_index.load(std::memory_order_relaxed);
-    const auto next = static_cast<uint16_t>((write + 1) & kModMark);
+inline bool RingBuffer::push(uint8_t ch) noexcept {
+    const kRingBufferSizeType write = write_index_.load(std::memory_order_relaxed);
+    kRingBufferSizeType next = static_cast<kRingBufferSizeType>(write + 1);
+    if (next == capacity_)
+        next = 0;
 
-    if (next == read_index.load(std::memory_order_acquire))
+    if (next == read_index_.load(std::memory_order_acquire))
         return false;
-    buffer[write] = ch;
-    write_index.store(next, std::memory_order_release);
+    storage_[write] = ch;
+    write_index_.store(next, std::memory_order_release);
     return true;
 }
 
-template <kRingBufferSizeType BUFFER_SIZE>
-bool RingBuffer<BUFFER_SIZE>::pop(uint8_t& ch) {
-    const uint16_t read = read_index.load(std::memory_order_relaxed);
+inline bool RingBuffer::pop(uint8_t& ch) noexcept {
+    const kRingBufferSizeType read = read_index_.load(std::memory_order_relaxed);
 
-    if (write_index.load(std::memory_order_acquire) == read)
+    if (write_index_.load(std::memory_order_acquire) == read)
         return false;
-    ch = buffer[read];
-    read_index.store(static_cast<uint16_t>((read + 1) & kModMark), std::memory_order_release);
-    return true;
-}
+    ch = storage_[read];
 
-template <kRingBufferSizeType BUFFER_SIZE>
-constexpr uint16_t RingBuffer<BUFFER_SIZE>::capacity() {
-    return BUFFER_SIZE;
+    kRingBufferSizeType next = static_cast<kRingBufferSizeType>(read + 1);
+    if (next == capacity_)
+        next = 0;
+    read_index_.store(next, std::memory_order_release);
+    return true;
 }
 
 }  // namespace kusart

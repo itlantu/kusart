@@ -19,7 +19,8 @@ namespace {
  * @return 行为全部符合预期时返回 true
  */
 bool RunSmokeCheck() {
-    kusart::RingBuffer<16> buffer{};
+    uint8_t storage[16]{};
+    kusart::RingBuffer buffer{storage};
     uint8_t byte = 0;
 
     if (buffer.count() != 0 || buffer.free() != 15)
